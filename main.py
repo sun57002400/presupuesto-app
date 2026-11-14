@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+import io
+import csv
 import json
 import re
 import math
@@ -26,15 +28,12 @@ CATEGORIAS_INGRESOS_DEFAULT = [
     "Aguinaldo"
 ]
 
-CATEGORIAS_GASTOS = list(CATEGORIAS_GASTOS_DEFAULT)
-CATEGORIAS_INGRESOS = list(CATEGORIAS_INGRESOS_DEFAULT)
-
 DIAS_SEMANA_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MESES_CORTO_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
 
 # =====================================================================
-# FUNCIONES UTILITARIAS Y DE FORMATO (100% IDÉNTICAS A TU ORIGINAL)
+# FUNCIONES UTILITARIAS Y DE FORMATO
 # =====================================================================
 
 def limpiar_clave(texto: str) -> str:
@@ -138,39 +137,22 @@ def sugerir_fechas_siguiente_periodo(fecha_fin_base: str) -> dict:
     return {"inicio": f"{yyyy:04d}-{mm:02d}-01", "fin": f"{yyyy:04d}-{mm:02d}-15"}
 
 
-def escapa_csv(val) -> str:
-    s = str(val if val is not None else "").replace('"', '""')
-    return f'"{s}"'
+def leer_filas_csv(contenido: str) -> list:
+    if not contenido:
+        return []
+    lineas = contenido.splitlines()
+    primera_linea = lineas[0] if lineas else ""
+    sep = ";" if (";" in primera_linea and "," not in primera_linea) else ","
+    lector = csv.reader(io.StringIO(contenido), delimiter=sep)
+    return [fila for fila in lector if any(celda.strip() for celda in fila)]
 
 
-def parse_csv_line(line: str) -> list:
-    sep = ";" if (";" in line and "," not in line) else ","
-    result = []
-    cur = []
-    in_quotes = False
-    i = 0
-    n = len(line)
-    while i < n:
-        ch = line[i]
-        if in_quotes:
-            if ch == '"' and i + 1 < n and line[i + 1] == '"':
-                cur.append('"')
-                i += 1
-            elif ch == '"':
-                in_quotes = False
-            else:
-                cur.append(ch)
-        else:
-            if ch == '"':
-                in_quotes = True
-            elif ch == sep:
-                result.append("".join(cur))
-                cur = []
-            else:
-                cur.append(ch)
-        i += 1
-    result.append("".join(cur))
-    return result
+def serializar_csv(encabezados: list, filas: list) -> str:
+    buf = io.StringIO()
+    escritor = csv.writer(buf, delimiter=",", quoting=csv.QUOTE_ALL, lineterminator="\n")
+    escritor.writerow(encabezados)
+    escritor.writerows(filas)
+    return buf.getvalue()
 
 
 def leer_archivo_seguro(ruta: str):
@@ -185,6 +167,27 @@ def leer_archivo_seguro(ruta: str):
     return None
 
 
+def obtener_rutas_rapidas() -> list:
+    rutas = [("📁 Datos_CSV", CSV_DIR)]
+    home = os.path.expanduser("~")
+    candidatos = [
+        ("⬇️ Descargas", os.path.join(home, "Downloads")),
+        ("⬇️ Descargas", "/storage/emulated/0/Download"),
+        ("📄 Documentos", os.path.join(home, "Documents")),
+        ("📄 Documentos", "/storage/emulated/0/Documents"),
+        ("📱 Android", "/storage/emulated/0"),
+        ("🏠 Inicio", home),
+    ]
+    vistos = {os.path.abspath(CSV_DIR)}
+    for etiqueta, r in candidatos:
+        if os.path.isdir(r):
+            abs_r = os.path.abspath(r)
+            if abs_r not in vistos:
+                vistos.add(abs_r)
+                rutas.append((etiqueta, abs_r))
+    return rutas
+
+
 # =====================================================================
 # APLICACIÓN PRINCIPAL FLET OPTIMIZADA PARA MÓVIL Y ESCRITORIO
 # =====================================================================
@@ -196,6 +199,10 @@ class PresupuestosFletApp:
         self.page.theme_mode = ft.ThemeMode.LIGHT
         self.page.bgcolor = "#f1f6fb"
         self.page.padding = 4
+
+        self.categorias_gastos = list(CATEGORIAS_GASTOS_DEFAULT)
+        self.categorias_ingresos = list(CATEGORIAS_INGRESOS_DEFAULT)
+        self.ultimo_dir_explorador = CSV_DIR
 
         self.app_data = self._crear_estado_vacio()
         self.sort_state = {
@@ -218,14 +225,13 @@ class PresupuestosFletApp:
         self.sync_status_ok = True
 
         self.root_container = ft.Column(expand=True, spacing=0)
-        # SafeArea evita que la barra superior del teléfono tape la app
         self.page.add(ft.SafeArea(content=self.root_container, expand=True))
 
         self.cargar_desde_disco(forzar_actual_o_cercano=True)
 
     def _crear_estado_vacio(self) -> dict:
         fechas = get_default_period_dates()
-        previstos = {c: 0.0 for c in CATEGORIAS_GASTOS}
+        previstos = {c: 0.0 for c in self.categorias_gastos}
         return {
             "resumenPantalla": {
                 "nombre": "Presupuesto: Nuevo Período",
@@ -234,8 +240,8 @@ class PresupuestosFletApp:
                 "ocultarSinUsarGastos": True,
                 "ocultarSinUsarIngresos": True,
                 "montosPrevistos": previstos,
-                "categoriasGastos": list(CATEGORIAS_GASTOS),
-                "categoriasIngresos": list(CATEGORIAS_INGRESOS)
+                "categoriasGastos": list(self.categorias_gastos),
+                "categoriasIngresos": list(self.categorias_ingresos)
             },
             "presupuestosDB": [],
             "transacciones": [],
@@ -349,51 +355,59 @@ class PresupuestosFletApp:
         return max((int(item.get("id") or 0) for item in coleccion), default=0) + 1
 
     def _generar_csv_gastos(self) -> str:
-        lineas = ["Fecha,Categoría,Concepto,Importe,Presupuesto"]
         ordenados = sorted(
             self.app_data["transacciones"],
             key=lambda t: (normalizar_fecha_iso(t.get("fecha")), int(t.get("id") or 0)),
             reverse=True
         )
-        for t in ordenados:
-            lineas.append(
-                f"{normalizar_fecha_iso(t.get('fecha'))},{escapa_csv(t.get('categoria'))},"
-                f"{escapa_csv(t.get('concepto'))},{limpiar_importe(t.get('importe'))},"
-                f"{escapa_csv(t.get('presupuesto') or '')}"
-            )
-        return "\n".join(lineas) + "\n"
+        filas = [
+            [
+                normalizar_fecha_iso(t.get("fecha")),
+                t.get("categoria") or "",
+                t.get("concepto") or "",
+                limpiar_importe(t.get("importe")),
+                t.get("presupuesto") or ""
+            ]
+            for t in ordenados
+        ]
+        return serializar_csv(["Fecha", "Categoría", "Concepto", "Importe", "Presupuesto"], filas)
 
     def _generar_csv_ingresos(self) -> str:
-        lineas = ["Fecha,Categoría,Concepto,Importe,Presupuesto"]
         ordenados = sorted(
             self.app_data["ingresos"],
             key=lambda i: (normalizar_fecha_iso(i.get("fecha")), int(i.get("id") or 0)),
             reverse=True
         )
-        for i in ordenados:
-            lineas.append(
-                f"{normalizar_fecha_iso(i.get('fecha'))},{escapa_csv(i.get('categoria'))},"
-                f"{escapa_csv(i.get('concepto'))},{limpiar_importe(i.get('importe'))},"
-                f"{escapa_csv(i.get('presupuesto') or '')}"
-            )
-        return "\n".join(lineas) + "\n"
+        filas = [
+            [
+                normalizar_fecha_iso(i.get("fecha")),
+                i.get("categoria") or "",
+                i.get("concepto") or "",
+                limpiar_importe(i.get("importe")),
+                i.get("presupuesto") or ""
+            ]
+            for i in ordenados
+        ]
+        return serializar_csv(["Fecha", "Categoría", "Concepto", "Importe", "Presupuesto"], filas)
 
     def _generar_csv_presupuestos(self) -> str:
         self._ordenar_presupuestos_db()
-        cabecera = "Nombre,FechaInicio,FechaFin," + ",".join(escapa_csv(c) for c in CATEGORIAS_GASTOS)
-        lineas = [cabecera]
+        cabecera = ["Nombre", "FechaInicio", "FechaFin"] + list(self.categorias_gastos)
+        filas = []
         for p in self.app_data["presupuestosDB"]:
-            montos = ",".join(str(limpiar_importe(p.get("montosPorCategoria", {}).get(c, 0))) for c in CATEGORIAS_GASTOS)
-            lineas.append(
-                f"{escapa_csv(p.get('nombre'))},{normalizar_fecha_iso(p.get('fechaInicio'))},"
-                f"{normalizar_fecha_iso(p.get('fechaFin'))},{montos}"
-            )
-        return "\n".join(lineas) + "\n"
+            montos = [limpiar_importe(p.get("montosPorCategoria", {}).get(c, 0)) for c in self.categorias_gastos]
+            filas.append([
+                p.get("nombre") or "",
+                normalizar_fecha_iso(p.get("fechaInicio")),
+                normalizar_fecha_iso(p.get("fechaFin")),
+                *montos
+            ])
+        return serializar_csv(cabecera, filas)
 
     def persist(self, guardar_csv: bool = True, guardar_resumen: bool = True):
         self._ordenar_presupuestos_db()
-        self.app_data["resumenPantalla"]["categoriasGastos"] = list(CATEGORIAS_GASTOS)
-        self.app_data["resumenPantalla"]["categoriasIngresos"] = list(CATEGORIAS_INGRESOS)
+        self.app_data["resumenPantalla"]["categoriasGastos"] = list(self.categorias_gastos)
+        self.app_data["resumenPantalla"]["categoriasIngresos"] = list(self.categorias_ingresos)
 
         archivos = {}
         if guardar_csv:
@@ -424,8 +438,8 @@ class PresupuestosFletApp:
         self.render_ui()
 
     def cargar_desde_disco(self, forzar_actual_o_cercano: bool = True):
-        CATEGORIAS_GASTOS[:] = list(CATEGORIAS_GASTOS_DEFAULT)
-        CATEGORIAS_INGRESOS[:] = list(CATEGORIAS_INGRESOS_DEFAULT)
+        self.categorias_gastos = list(CATEGORIAS_GASTOS_DEFAULT)
+        self.categorias_ingresos = list(CATEGORIAS_INGRESOS_DEFAULT)
 
         res_raw = leer_archivo_seguro(os.path.join(CSV_DIR, "resumen_activo.json"))
         res_obj_loaded = None
@@ -436,28 +450,27 @@ class PresupuestosFletApp:
                     res_obj["fechaInicio"] = normalizar_fecha_iso(res_obj.get("fechaInicio"))
                     res_obj["fechaFin"] = normalizar_fecha_iso(res_obj.get("fechaFin"))
                     if isinstance(res_obj.get("categoriasGastos"), list) and res_obj["categoriasGastos"]:
-                        CATEGORIAS_GASTOS[:] = [str(c).strip() for c in res_obj["categoriasGastos"] if str(c).strip()]
+                        self.categorias_gastos = [str(c).strip() for c in res_obj["categoriasGastos"] if str(c).strip()]
                     if isinstance(res_obj.get("categoriasIngresos"), list) and res_obj["categoriasIngresos"]:
-                        CATEGORIAS_INGRESOS[:] = [str(c).strip() for c in res_obj["categoriasIngresos"] if str(c).strip()]
+                        self.categorias_ingresos = [str(c).strip() for c in res_obj["categoriasIngresos"] if str(c).strip()]
                     res_obj_loaded = res_obj
             except Exception:
                 pass
 
         pres_raw = leer_archivo_seguro(os.path.join(CSV_DIR, "presupuestos.csv"))
         if pres_raw:
-            lineas = [l for l in pres_raw.strip().splitlines() if l.strip()]
-            if len(lineas) > 1:
-                encabezados = parse_csv_line(lineas[0])[3:]
+            filas = leer_filas_csv(pres_raw)
+            if len(filas) > 1:
+                encabezados = filas[0][3:]
                 for cat_csv in encabezados:
                     cat_limpia = cat_csv.strip()
-                    if cat_limpia and not resolver_categoria(cat_limpia, CATEGORIAS_GASTOS, None):
-                        CATEGORIAS_GASTOS.append(cat_limpia)
+                    if cat_limpia and not resolver_categoria(cat_limpia, self.categorias_gastos, None):
+                        self.categorias_gastos.append(cat_limpia)
                 nueva_db = []
-                for idx, l in enumerate(lineas[1:]):
-                    cols = parse_csv_line(l)
-                    mapa = {c: 0.0 for c in CATEGORIAS_GASTOS}
+                for idx, cols in enumerate(filas[1:]):
+                    mapa = {c: 0.0 for c in self.categorias_gastos}
                     for c_idx, cat_name in enumerate(encabezados):
-                        cat_of = resolver_categoria(cat_name, CATEGORIAS_GASTOS, None)
+                        cat_of = resolver_categoria(cat_name, self.categorias_gastos, None)
                         if cat_of and (c_idx + 3) < len(cols):
                             mapa[cat_of] = limpiar_importe(cols[c_idx + 3])
                     nueva_db.append({
@@ -484,30 +497,29 @@ class PresupuestosFletApp:
                 "ocultarSinUsarIngresos": ocultar_i,
                 "montosPrevistos": {
                     c: float(elegido.get("montosPorCategoria", {}).get(c) or 0.0)
-                    for c in CATEGORIAS_GASTOS
+                    for c in self.categorias_gastos
                 },
-                "categoriasGastos": list(CATEGORIAS_GASTOS),
-                "categoriasIngresos": list(CATEGORIAS_INGRESOS)
+                "categoriasGastos": list(self.categorias_gastos),
+                "categoriasIngresos": list(self.categorias_ingresos)
             }
         elif res_obj_loaded is not None:
-            for c in CATEGORIAS_GASTOS:
+            for c in self.categorias_gastos:
                 res_obj_loaded["montosPrevistos"].setdefault(c, 0.0)
             self.app_data["resumenPantalla"] = res_obj_loaded
 
         gas_raw = leer_archivo_seguro(os.path.join(CSV_DIR, "gastos.csv"))
         if gas_raw:
-            lineas = [l for l in gas_raw.strip().splitlines()[1:] if l.strip()]
-            total_l = len(lineas)
+            filas = leer_filas_csv(gas_raw)[1:]
+            total_l = len(filas)
             trans = []
-            fallback_g = resolver_categoria("Otros Fuera Presupuesto", CATEGORIAS_GASTOS, CATEGORIAS_GASTOS[-1])
-            for idx, l in enumerate(lineas):
-                cols = parse_csv_line(l)
+            fallback_g = resolver_categoria("Otros Fuera Presupuesto", self.categorias_gastos, self.categorias_gastos[-1])
+            for idx, cols in enumerate(filas):
                 f = normalizar_fecha_iso(cols[0] if len(cols) > 0 else "")
                 pres_col = cols[4] if len(cols) >= 5 else ""
                 trans.append({
                     "id": total_l - idx,
                     "fecha": f,
-                    "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", CATEGORIAS_GASTOS, fallback_g),
+                    "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", self.categorias_gastos, fallback_g),
                     "concepto": (cols[2] if len(cols) > 2 else "").strip(),
                     "importe": limpiar_importe(cols[3] if len(cols) > 3 else 0),
                     "presupuesto": self.inferir_presupuesto_por_fecha(f, pres_col)
@@ -516,18 +528,17 @@ class PresupuestosFletApp:
 
         ing_raw = leer_archivo_seguro(os.path.join(CSV_DIR, "ingresos.csv"))
         if ing_raw:
-            lineas = [l for l in ing_raw.strip().splitlines()[1:] if l.strip()]
-            total_l = len(lineas)
+            filas = leer_filas_csv(ing_raw)[1:]
+            total_l = len(filas)
             ingresos = []
-            fallback_i = resolver_categoria("Efectivo", CATEGORIAS_INGRESOS, CATEGORIAS_INGRESOS[0])
-            for idx, l in enumerate(lineas):
-                cols = parse_csv_line(l)
+            fallback_i = resolver_categoria("Efectivo", self.categorias_ingresos, self.categorias_ingresos[0])
+            for idx, cols in enumerate(filas):
                 f = normalizar_fecha_iso(cols[0] if len(cols) > 0 else "")
                 pres_col = cols[4] if len(cols) >= 5 else ""
                 ingresos.append({
                     "id": total_l - idx,
                     "fecha": f,
-                    "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", CATEGORIAS_INGRESOS, fallback_i),
+                    "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", self.categorias_ingresos, fallback_i),
                     "concepto": (cols[2] if len(cols) > 2 else "").strip(),
                     "importe": limpiar_importe(cols[3] if len(cols) > 3 else 0),
                     "presupuesto": self.inferir_presupuesto_por_fecha(f, pres_col)
@@ -539,9 +550,14 @@ class PresupuestosFletApp:
         self.persist()
 
     # -----------------------------------------------------------------
-    # COMPONENTES DE DIÁLOGOS MODERNOS Y SELECTORES (ADAPTADOS A MÓVIL)
+    # COMPONENTES DE DIÁLOGOS MODERNOS Y SELECTORES
     # -----------------------------------------------------------------
     def _abrir_dialogo(self, dlg: ft.AlertDialog):
+        # Limpiar únicamente diálogos que ya fueron cerrados en turnos previos
+        for d in list(self.page.overlay):
+            if isinstance(d, ft.AlertDialog) and not getattr(d, "open", False) and d is not dlg:
+                self.page.overlay.remove(d)
+
         dlg.inset_padding = ft.Padding.symmetric(horizontal=12, vertical=16)
         if dlg not in self.page.overlay:
             self.page.overlay.append(dlg)
@@ -676,6 +692,10 @@ class PresupuestosFletApp:
         lbl_info = ft.Text("Sugerencias", size=11, color="#3b6998", weight=ft.FontWeight.BOLD)
         col_items = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, height=230)
 
+        def _seleccionar(val):
+            self._cerrar_dialogo(dlg)
+            on_choose(val)
+
         def _filtrar(query_raw: str = ""):
             tokens = [limpiar_clave(t) for t in query_raw.strip().split() if t.strip()]
             if not tokens:
@@ -686,7 +706,7 @@ class PresupuestosFletApp:
                     if all(tok in limpiar_clave(f"{it[0]} {it[2] if len(it) > 2 else ''}") for tok in tokens)
                 ]
             col_items.controls.clear()
-            visibles = matches[:15]
+            visibles = matches[:20]
             if not visibles:
                 lbl_info.value = "⚠️ Sin coincidencias"
                 col_items.controls.append(ft.Text("No se encontraron resultados", color="#94a3b8", size=12))
@@ -697,7 +717,7 @@ class PresupuestosFletApp:
                         ft.Container(
                             bgcolor="#f5f9fd", border=ft.Border.all(1, "#d4e4f4"), border_radius=6,
                             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-                            on_click=lambda e, v=val: (self._cerrar_dialogo(dlg), on_choose(v)),
+                            on_click=lambda e, v=val: _seleccionar(v),
                             content=ft.Text(label, color="#1e293b", size=12, weight=ft.FontWeight.W_600)
                         )
                     )
@@ -719,12 +739,238 @@ class PresupuestosFletApp:
         self._abrir_dialogo(dlg)
 
     # -----------------------------------------------------------------
+    # EXPLORADOR INTERACTIVO DEL SISTEMA DE ARCHIVOS (IMPORTAR/EXPORTAR)
+    # -----------------------------------------------------------------
+    def abrir_explorador_archivos(self, modo: str = "importar", on_file_selected=None):
+        es_importar = (modo == "importar")
+        dir_inicial = self.ultimo_dir_explorador if os.path.isdir(self.ultimo_dir_explorador) else CSV_DIR
+        estado_nav = {"dir": os.path.abspath(dir_inicial)}
+
+        tf_ruta = ft.TextField(
+            value=estado_nav["dir"],
+            label="Ruta actual (puedes escribir o pegar una ruta)",
+            text_size=11, height=38, expand=True,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+            border_color="#93c5fd"
+        )
+        tf_filtro = ft.TextField(
+            hint_text="🔎 Filtrar carpetas o archivos .json...",
+            text_size=11.5, height=34,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+            border_color="#cbd5e1"
+        )
+        tf_nombre_export = ft.TextField(
+            label="Nombre del archivo a guardar",
+            value=f"presupuesto_backup_{get_local_iso_date()}.json",
+            text_size=11.5, height=38,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+            border_color="#6ee7b7"
+        )
+        lbl_estado_dir = ft.Text("", size=10.5, color="#3b6998", weight=ft.FontWeight.BOLD)
+        col_archivos = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, height=220)
+
+        def _cambiar_directorio(nueva_ruta: str):
+            ruta_limpia = os.path.abspath(os.path.expanduser(str(nueva_ruta or "").strip()))
+            if not os.path.exists(ruta_limpia):
+                self.mostrar_alerta("Ruta no encontrada", f"No existe el directorio:\n{ruta_limpia}", "⚠️")
+                return
+            if os.path.isfile(ruta_limpia):
+                ruta_limpia = os.path.dirname(ruta_limpia)
+            try:
+                os.listdir(ruta_limpia)
+            except PermissionError:
+                self.mostrar_alerta("Permiso denegado", f"El sistema bloqueó el acceso a:\n{ruta_limpia}", "🔒")
+                return
+            except Exception as ex:
+                self.mostrar_alerta("Error de acceso", str(ex), "⚠️")
+                return
+
+            estado_nav["dir"] = ruta_limpia
+            self.ultimo_dir_explorador = ruta_limpia
+            tf_ruta.value = ruta_limpia
+            _render_listado()
+
+        def _subir_nivel(e=None):
+            actual = estado_nav["dir"]
+            padre = os.path.dirname(actual)
+            if padre and padre != actual:
+                _cambiar_directorio(padre)
+
+        def _al_tocar_json(ruta_completa: str, nombre_arch: str):
+            if es_importar:
+                self._cerrar_dialogo(dlg)
+                if on_file_selected:
+                    on_file_selected(ruta_completa)
+            else:
+                tf_nombre_export.value = nombre_arch
+                self.page.update()
+
+        def _render_listado():
+            col_archivos.controls.clear()
+            dir_actual = estado_nav["dir"]
+            q = limpiar_clave(tf_filtro.value or "")
+
+            try:
+                entradas = os.listdir(dir_actual)
+            except Exception as ex:
+                lbl_estado_dir.value = "⚠️ Error leyendo carpeta"
+                col_archivos.controls.append(ft.Text(f"No se pudo leer la carpeta: {ex}", color="#dc2626", size=11))
+                self.page.update()
+                return
+
+            carpetas = []
+            archivos_json = []
+
+            for nombre in entradas:
+                if nombre.startswith("."):
+                    continue
+                if q and q not in limpiar_clave(nombre):
+                    continue
+                ruta_item = os.path.join(dir_actual, nombre)
+                try:
+                    if os.path.isdir(ruta_item):
+                        carpetas.append((nombre, ruta_item))
+                    elif os.path.isfile(ruta_item) and nombre.lower().endswith(".json"):
+                        stat = os.stat(ruta_item)
+                        kb = stat.st_size / 1024.0
+                        fecha_mod = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                        archivos_json.append((nombre, ruta_item, f"{kb:.1f} KB • {fecha_mod}"))
+                except OSError:
+                    continue
+
+            carpetas.sort(key=lambda x: limpiar_clave(x[0]))
+            archivos_json.sort(key=lambda x: x[0].lower(), reverse=True)
+
+            padre = os.path.dirname(dir_actual)
+            if padre and padre != dir_actual:
+                col_archivos.controls.append(
+                    ft.Container(
+                        bgcolor="#eaf3fc", border=ft.Border.all(1, "#93c5fd"), border_radius=6,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=7),
+                        on_click=_subir_nivel,
+                        content=ft.Row([
+                            ft.Text("⬆️", size=13),
+                            ft.Text(".. (Subir a carpeta superior)", color="#2c5282", weight=ft.FontWeight.BOLD, size=11.5, expand=True)
+                        ], spacing=6)
+                    )
+                )
+
+            for nom_c, ruta_c in carpetas:
+                col_archivos.controls.append(
+                    ft.Container(
+                        bgcolor="#f8fafc", border=ft.Border.all(1, "#cbd5e1"), border_radius=6,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=7),
+                        on_click=lambda e, rc=ruta_c: _cambiar_directorio(rc),
+                        content=ft.Row([
+                            ft.Text("📁", size=13),
+                            ft.Text(nom_c, color="#1e293b", weight=ft.FontWeight.W_600, size=11.5, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text("Abrir ▶", color="#64748b", size=10)
+                        ], spacing=6)
+                    )
+                )
+
+            for nom_a, ruta_a, meta_a in archivos_json:
+                es_resumen_interno = (nom_a == "resumen_activo.json")
+                col_archivos.controls.append(
+                    ft.Container(
+                        bgcolor="#ecfdf5" if not es_resumen_interno else "#fefce8",
+                        border=ft.Border.all(1, "#6ee7b7" if not es_resumen_interno else "#fde047"),
+                        border_radius=6,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=7),
+                        on_click=lambda e, ra=ruta_a, na=nom_a: _al_tocar_json(ra, na),
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Text("📄", size=12),
+                                ft.Text(nom_a, color="#065f46" if not es_resumen_interno else "#854d0e", weight=ft.FontWeight.BOLD, size=11.5, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text("Cargar" if es_importar else "Elegir", color="#059669", size=10, weight=ft.FontWeight.BOLD)
+                            ], spacing=6),
+                            ft.Text(meta_a, color="#64748b", size=9.5)
+                        ], spacing=2)
+                    )
+                )
+
+            if not carpetas and not archivos_json:
+                col_archivos.controls.append(
+                    ft.Container(
+                        padding=12, alignment=ft.Alignment(0, 0),
+                        content=ft.Text("No hay subcarpetas ni archivos .json en esta ruta.", color="#94a3b8", size=11.5)
+                    )
+                )
+
+            lbl_estado_dir.value = f"📁 {len(carpetas)} carpeta(s)  |  📄 {len(archivos_json)} archivo(s) .json"
+            self.page.update()
+
+        tf_ruta.on_submit = lambda e: _cambiar_directorio(tf_ruta.value or "")
+        tf_filtro.on_change = lambda e: _render_listado()
+
+        chips_accesos = [
+            ft.Container(
+                bgcolor="#eaf3fc", border=ft.Border.all(1, "#93c5fd"), border_radius=12,
+                padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+                on_click=lambda e, r=ruta_dest: _cambiar_directorio(r),
+                content=ft.Text(etiqueta, color="#2c5282", size=10, weight=ft.FontWeight.BOLD)
+            )
+            for etiqueta, ruta_dest in obtener_rutas_rapidas()
+        ]
+
+        controles_modal = [
+            ft.Row([
+                tf_ruta,
+                ft.Button("Ir", bgcolor="#4a78a8", color="white", on_click=lambda e: _cambiar_directorio(tf_ruta.value or ""))
+            ], spacing=4),
+            ft.Row(chips_accesos, wrap=True, spacing=4, run_spacing=4),
+            tf_filtro,
+            lbl_estado_dir,
+            ft.Container(
+                border=ft.Border.all(1, "#c2d5e8"), border_radius=6, padding=4, bgcolor="#ffffff",
+                content=col_archivos
+            )
+        ]
+
+        acciones_modal = [
+            ft.Button("✕ Cancelar", bgcolor="#e11d48", color="white", on_click=lambda e: self._cerrar_dialogo(dlg))
+        ]
+
+        if not es_importar:
+            controles_modal.append(tf_nombre_export)
+
+            def _confirmar_export(e):
+                nom = (tf_nombre_export.value or "").strip()
+                if not nom:
+                    self.mostrar_alerta("Validación", "Escribe un nombre para el archivo.", "⚠️")
+                    return
+                if not nom.lower().endswith(".json"):
+                    nom += ".json"
+                ruta_final = os.path.join(estado_nav["dir"], nom)
+                self._cerrar_dialogo(dlg)
+                if on_file_selected:
+                    on_file_selected(ruta_final)
+
+            acciones_modal.append(
+                ft.Button("💾 Guardar Aquí", bgcolor="#10b981", color="white", on_click=_confirmar_export)
+            )
+
+        dlg = ft.AlertDialog(
+            title=ft.Container(
+                bgcolor="#4a78a8", padding=10, border_radius=6,
+                content=ft.Text(
+                    "📂 Explorador: Cargar Backup (.json)" if es_importar else "💾 Explorador: Guardar Backup (.json)",
+                    color="white", weight=ft.FontWeight.BOLD, size=12.5
+                )
+            ),
+            content=ft.Column(controles_modal, tight=True, width=330, spacing=6),
+            actions=acciones_modal
+        )
+        _render_listado()
+        self._abrir_dialogo(dlg)
+
+    # -----------------------------------------------------------------
     # MODALES: GASTO / INGRESO / PRESUPUESTO / CATEGORÍAS
     # -----------------------------------------------------------------
     def open_movimiento_modal(self, tipo: str, edit_id=None):
         es_gasto = (tipo == "gasto")
         coleccion = self.app_data["transacciones"] if es_gasto else self.app_data["ingresos"]
-        lista_categorias = CATEGORIAS_GASTOS if es_gasto else CATEGORIAS_INGRESOS
+        lista_categorias = self.categorias_gastos if es_gasto else self.categorias_ingresos
         item_editar = None
         if edit_id is not None:
             item_editar = next((x for x in coleccion if int(x["id"]) == int(edit_id)), None)
@@ -881,7 +1127,7 @@ class PresupuestosFletApp:
             lbl_total_live.value = f"Total: {format_money(tot)}"
             self.page.update()
 
-        for cat in CATEGORIAS_GASTOS:
+        for cat in self.categorias_gastos:
             v_ini = float(montos_ini.get(cat) or 0.0)
             tf_c = ft.TextField(
                 value=f"{v_ini:g}" if v_ini.is_integer() else f"{v_ini:.2f}",
@@ -1029,7 +1275,7 @@ class PresupuestosFletApp:
         btn_tipo_ing = ft.Button("💵 Ingresos", bgcolor="#eaf3fc", color="#2c5282")
 
         def _lista_activa():
-            return CATEGORIAS_GASTOS if estado["tipo"] == "gastos" else CATEGORIAS_INGRESOS
+            return self.categorias_gastos if estado["tipo"] == "gastos" else self.categorias_ingresos
 
         def _refrescar_lista():
             lista = _lista_activa()
@@ -1172,7 +1418,7 @@ class PresupuestosFletApp:
             res["nombre"] = "Presupuesto: " + reg["nombre"]
             res["fechaInicio"] = normalizar_fecha_iso(reg["fechaInicio"])
             res["fechaFin"] = normalizar_fecha_iso(reg["fechaFin"])
-            for c in CATEGORIAS_GASTOS:
+            for c in self.categorias_gastos:
                 res["montosPrevistos"][c] = float(reg.get("montosPorCategoria", {}).get(c) or 0.0)
             self._active_tab = "resumen"
             self.persist(guardar_csv=False, guardar_resumen=True)
@@ -1200,7 +1446,7 @@ class PresupuestosFletApp:
         if not f_ini or not f_fin or f_ini > f_fin:
             self.mostrar_alerta("Validación de Fechas", "Verifica que la Fecha Inicio no sea mayor que la Fecha Fin.", "⚠️")
             return
-        mapa = {c: float(res["montosPrevistos"].get(c) or 0.0) for c in CATEGORIAS_GASTOS}
+        mapa = {c: float(res["montosPrevistos"].get(c) or 0.0) for c in self.categorias_gastos}
         if sum(mapa.values()) <= 0:
             self.mostrar_alerta("Validación de Montos", "El presupuesto no puede tener todos los gastos previstos en $0.00.", "⚠️")
             return
@@ -1226,7 +1472,7 @@ class PresupuestosFletApp:
         if not f_ini or not f_fin or f_ini > f_fin:
             self.mostrar_alerta("Validación de Fechas", "La Fecha de Inicio no puede ser posterior a la Fecha Fin.", "⚠️")
             return
-        mapa = {c: float(res["montosPrevistos"].get(c) or 0.0) for c in CATEGORIAS_GASTOS}
+        mapa = {c: float(res["montosPrevistos"].get(c) or 0.0) for c in self.categorias_gastos}
         if sum(mapa.values()) <= 0:
             self.mostrar_alerta("Validación de Montos", "No puedes guardar un presupuesto nuevo con todos los gastos previstos en $0.00.", "⚠️")
             return
@@ -1317,7 +1563,7 @@ class PresupuestosFletApp:
                     res["nombre"] = "Presupuesto: " + elegido["nombre"]
                     res["fechaInicio"] = normalizar_fecha_iso(elegido["fechaInicio"])
                     res["fechaFin"] = normalizar_fecha_iso(elegido["fechaFin"])
-                    for c in CATEGORIAS_GASTOS:
+                    for c in self.categorias_gastos:
                         res["montosPrevistos"][c] = float(elegido.get("montosPorCategoria", {}).get(c) or 0.0)
                 else:
                     self.app_data["resumenPantalla"]["nombre"] = "Presupuesto: Nuevo Período"
@@ -1347,36 +1593,39 @@ class PresupuestosFletApp:
             self.mostrar_confirmacion("Eliminar Presupuesto", f"¿Confirmas eliminar el presupuesto '{nombre}'?", lambda: _finalizar_borrado("simple"))
 
     def exportar_backup_json(self):
-        nombre_archivo = f"presupuesto_backup_{get_local_iso_date()}.json"
-        ruta = os.path.join(CSV_DIR, nombre_archivo)
-        with open(ruta, "w", encoding="utf-8") as f:
-            json.dump(self.app_data, f, indent=2, ensure_ascii=False)
-        self.mostrar_alerta("Respaldo Exportado", f"Guardado en:\n{ruta}", "✅")
+        def _guardar_en_ruta(ruta_destino: str):
+            try:
+                with open(ruta_destino, "w", encoding="utf-8") as f:
+                    json.dump(self.app_data, f, indent=2, ensure_ascii=False)
+                self.mostrar_alerta("Respaldo Exportado", f"Guardado exitosamente en:\n{ruta_destino}", "✅")
+            except Exception as ex:
+                self.mostrar_alerta("Error al Exportar", f"No se pudo guardar el archivo:\n{ex}", "⚠️")
+
+        self.abrir_explorador_archivos(modo="exportar", on_file_selected=_guardar_en_ruta)
 
     def importar_backup_json(self):
-        archivos = [f for f in os.listdir(CSV_DIR) if f.endswith(".json") and f != "resumen_activo.json"]
-        if not archivos:
-            self.mostrar_alerta("Sin respaldos", f"Coloca tu archivo .json dentro de:\n{CSV_DIR}", "ℹ️")
-            return
-
-        def _cargar(nom_arch):
-            ruta = os.path.join(CSV_DIR, nom_arch)
+        def _cargar_desde_ruta(ruta_origen: str):
             try:
-                with open(ruta, "r", encoding="utf-8") as f:
-                    p = json.load(f)
-                if "resumenPantalla" in p and "presupuestosDB" in p:
+                contenido = leer_archivo_seguro(ruta_origen)
+                if not contenido:
+                    self.mostrar_alerta("Error", "No se pudo leer el archivo seleccionado.", "⚠️")
+                    return
+                p = json.loads(contenido)
+                if isinstance(p, dict) and "resumenPantalla" in p and "presupuestosDB" in p:
                     res_p = p["resumenPantalla"]
                     if isinstance(res_p.get("categoriasGastos"), list) and res_p["categoriasGastos"]:
-                        CATEGORIAS_GASTOS[:] = res_p["categoriasGastos"]
+                        self.categorias_gastos = [str(c).strip() for c in res_p["categoriasGastos"] if str(c).strip()]
                     if isinstance(res_p.get("categoriasIngresos"), list) and res_p["categoriasIngresos"]:
-                        CATEGORIAS_INGRESOS[:] = res_p["categoriasIngresos"]
+                        self.categorias_ingresos = [str(c).strip() for c in res_p["categoriasIngresos"] if str(c).strip()]
                     self.app_data = p
                     self.persist()
-                    self.mostrar_alerta("Respaldo Restaurado", "¡Respaldo restaurado y sincronizado!", "✅")
-            except Exception:
-                self.mostrar_alerta("Error", "El archivo JSON seleccionado no es válido.", "⚠️")
+                    self.mostrar_alerta("Respaldo Restaurado", f"¡Respaldo cargado y sincronizado desde:\n{os.path.basename(ruta_origen)}!", "✅")
+                else:
+                    self.mostrar_alerta("Formato Inválido", "El archivo JSON no contiene la estructura de un backup completo (resumenPantalla y presupuestosDB).", "⚠️")
+            except Exception as ex:
+                self.mostrar_alerta("Error", f"El archivo JSON seleccionado no es válido:\n{ex}", "⚠️")
 
-        self.abrir_buscador_en_vivo("📂 Seleccionar Backup JSON", [(a, a, a) for a in archivos], _cargar)
+        self.abrir_explorador_archivos(modo="importar", on_file_selected=_cargar_desde_ruta)
 
     # -----------------------------------------------------------------
     # CONSTRUCCIÓN DE INTERFAZ GRÁFICA ADAPTATIVA (MÓVIL + PC)
@@ -1384,7 +1633,6 @@ class PresupuestosFletApp:
     def render_ui(self):
         self.root_container.controls.clear()
 
-        # 1. BARRA DE PESTAÑAS ESTILO SHEETS AJUSTADA AL 100% DEL ANCHO MÓVIL
         tabs_spec = [
             ("resumen", "📑 Resumen"),
             ("transacciones", "💳 Gastos"),
@@ -1426,7 +1674,6 @@ class PresupuestosFletApp:
             content=ft.Row(tab_controls, spacing=3)
         )
 
-        # 2. CONTENEDOR PRINCIPAL DE VISTAS (#ffffff)
         if self._active_tab == "resumen":
             vista_activa = self._build_resumen_view()
         elif self._active_tab == "transacciones":
@@ -1453,7 +1700,7 @@ class PresupuestosFletApp:
         self.render_ui()
 
     # -----------------------------------------------------------------
-    # VISTA 1: PESTAÑA RESUMEN OPTIMIZADA PARA PANTALLA DE CELULAR
+    # VISTA 1: PESTAÑA RESUMEN OPTIMIZADA
     # -----------------------------------------------------------------
     def _build_resumen_view(self) -> ft.Control:
         db = self.app_data["presupuestosDB"]
@@ -1479,7 +1726,6 @@ class PresupuestosFletApp:
             for i, p in enumerate(db)
         ]
 
-        # Cápsula buscadora a todo el ancho disponible en móvil
         nav_capsule = ft.Container(
             bgcolor="#eaf3fc",
             border=ft.Border.all(1.5, "#93c5fd"),
@@ -1536,7 +1782,6 @@ class PresupuestosFletApp:
             ]
         )
 
-        # Barra de herramientas organizada para celular (sin desborde horizontal)
         menu_bar = ft.Container(
             bgcolor="#f5f9fd", border=ft.Border.all(1, "#d4e4f4"), border_radius=8, padding=6,
             content=ft.Column([
@@ -1564,7 +1809,7 @@ class PresupuestosFletApp:
             ], spacing=6)
         )
 
-        # --- CÁLCULOS EXACTOS DEL PANEL EJECUTIVO KPI ---
+        # --- CÁLCULOS DEL PANEL EJECUTIVO KPI ---
         ing_hist = sum(limpiar_importe(i["importe"]) for i in self.app_data["ingresos"] if normalizar_fecha_iso(i["fecha"]) <= hoy)
         gas_hist = sum(limpiar_importe(t["importe"]) for t in self.app_data["transacciones"] if normalizar_fecha_iso(t["fecha"]) <= hoy)
         pos_neta = ing_hist - gas_hist
@@ -1573,23 +1818,23 @@ class PresupuestosFletApp:
         gas_previos = sum(limpiar_importe(t["importe"]) for t in self.app_data["transacciones"] if self.pertenece_a_periodo_previo(t, nombre_activo, f_ini, f_fin))
         saldo_previo = ing_previos - gas_previos
 
-        gastos_reales = {c: 0.0 for c in CATEGORIAS_GASTOS}
+        gastos_reales = {c: 0.0 for c in self.categorias_gastos}
         total_gastos_reales = 0.0
-        fallback_g = resolver_categoria("Otros Fuera Presupuesto", CATEGORIAS_GASTOS, CATEGORIAS_GASTOS[-1])
+        fallback_g = resolver_categoria("Otros Fuera Presupuesto", self.categorias_gastos, self.categorias_gastos[-1])
         for t in self.app_data["transacciones"]:
             if self.pertenece_a_presupuesto_activo(t, nombre_activo, f_ini, f_fin):
                 v = limpiar_importe(t["importe"])
-                cat = resolver_categoria(t.get("categoria"), CATEGORIAS_GASTOS, fallback_g)
+                cat = resolver_categoria(t.get("categoria"), self.categorias_gastos, fallback_g)
                 gastos_reales[cat] = gastos_reales.get(cat, 0.0) + v
                 total_gastos_reales += v
 
-        ingresos_reales = {c: 0.0 for c in CATEGORIAS_INGRESOS}
+        ingresos_reales = {c: 0.0 for c in self.categorias_ingresos}
         total_ingresos_reales = 0.0
-        fallback_i = resolver_categoria("Efectivo", CATEGORIAS_INGRESOS, CATEGORIAS_INGRESOS[0])
+        fallback_i = resolver_categoria("Efectivo", self.categorias_ingresos, self.categorias_ingresos[0])
         for i in self.app_data["ingresos"]:
             if self.pertenece_a_presupuesto_activo(i, nombre_activo, f_ini, f_fin):
                 v = limpiar_importe(i["importe"])
-                cat = resolver_categoria(i.get("categoria"), CATEGORIAS_INGRESOS, fallback_i)
+                cat = resolver_categoria(i.get("categoria"), self.categorias_ingresos, fallback_i)
                 ingresos_reales[cat] = ingresos_reales.get(cat, 0.0) + v
                 total_ingresos_reales += v
 
@@ -1597,7 +1842,7 @@ class PresupuestosFletApp:
         sum_diff_neg = 0.0
         sum_diff_pos = 0.0
         count_sin_usar_gas = 0
-        for cat in CATEGORIAS_GASTOS:
+        for cat in self.categorias_gastos:
             prev = float(res["montosPrevistos"].get(cat) or 0.0)
             real = float(gastos_reales.get(cat) or 0.0)
             diff = prev - real
@@ -1684,10 +1929,10 @@ class PresupuestosFletApp:
             ])
         )
 
-        # --- TABLA RESUMEN DE GASTOS (DIMENSIONADA PARA ANCHO DE CELULAR ~350px) ---
+        # --- TABLA RESUMEN DE GASTOS ---
         ocultar_gas = bool(res.get("ocultarSinUsarGastos", True))
         cats_visibles_gas = [
-            c for c in CATEGORIAS_GASTOS
+            c for c in self.categorias_gastos
             if not (ocultar_gas and float(res["montosPrevistos"].get(c) or 0) == 0 and float(gastos_reales.get(c) or 0) == 0)
         ]
 
@@ -1715,7 +1960,11 @@ class PresupuestosFletApp:
         ]
 
         def _on_previsto_change(cat_name, nuevo_txt):
-            res["montosPrevistos"][cat_name] = limpiar_importe(nuevo_txt)
+            nuevo_val = limpiar_importe(nuevo_txt)
+            val_actual = float(res["montosPrevistos"].get(cat_name) or 0.0)
+            if abs(nuevo_val - val_actual) < 1e-6:
+                return
+            res["montosPrevistos"][cat_name] = nuevo_val
             self.persist(guardar_csv=False, guardar_resumen=True)
 
         for idx_r, cat in enumerate(cats_visibles_gas):
@@ -1799,10 +2048,10 @@ class PresupuestosFletApp:
         )
 
         # --- TABLA RESUMEN DE INGRESOS ---
-        count_sin_usar_ing = sum(1 for c in CATEGORIAS_INGRESOS if float(ingresos_reales.get(c) or 0) == 0)
+        count_sin_usar_ing = sum(1 for c in self.categorias_ingresos if float(ingresos_reales.get(c) or 0) == 0)
         ocultar_ing = bool(res.get("ocultarSinUsarIngresos", True))
         cats_visibles_ing = [
-            c for c in CATEGORIAS_INGRESOS
+            c for c in self.categorias_ingresos
             if not (ocultar_ing and float(ingresos_reales.get(c) or 0) == 0)
         ]
 
@@ -1878,13 +2127,13 @@ class PresupuestosFletApp:
         )
 
     # -----------------------------------------------------------------
-    # VISTAS 2 Y 3: GASTOS E INGRESOS (FILAS COMPACTAS PARA MÓVIL)
+    # VISTAS 2 Y 3: GASTOS E INGRESOS
     # -----------------------------------------------------------------
     def _build_movimientos_view(self, tipo: str) -> ft.Control:
         es_gasto = (tipo == "gasto")
         tabla_key = "transacciones" if es_gasto else "ingresos"
         coleccion = self.app_data[tabla_key]
-        categorias = CATEGORIAS_GASTOS if es_gasto else CATEGORIAS_INGRESOS
+        categorias = self.categorias_gastos if es_gasto else self.categorias_ingresos
         color_imp = "#be123c" if es_gasto else "#059669"
 
         k_txt = "trans_txt" if es_gasto else "ing_txt"
@@ -2079,7 +2328,7 @@ class PresupuestosFletApp:
         )
 
     # -----------------------------------------------------------------
-    # VISTA 4: PERÍODOS DE PRESUPUESTOS GUARDADOS (TARJETAS MÓVILES)
+    # VISTA 4: PERÍODOS DE PRESUPUESTOS GUARDADOS
     # -----------------------------------------------------------------
     def _build_presupuestos_view(self) -> ft.Control:
         db = self.app_data["presupuestosDB"]
@@ -2090,7 +2339,7 @@ class PresupuestosFletApp:
         for idx, p in enumerate(db):
             f_i = normalizar_fecha_iso(p.get("fechaInicio"))
             f_f = normalizar_fecha_iso(p.get("fechaFin"))
-            total_fila = sum(float(p.get("montosPorCategoria", {}).get(c) or 0.0) for c in CATEGORIAS_GASTOS)
+            total_fila = sum(float(p.get("montosPorCategoria", {}).get(c) or 0.0) for c in self.categorias_gastos)
             busq = limpiar_clave(f"{p['nombre']} {f_i} {f_f} {formatear_fecha_bonita(f_i)} {formatear_fecha_bonita(f_f)} {format_money(total_fila)}")
             coincide_txt = (not txt) or all(tok in busq for tok in txt.split())
             coincide_anio = (not anio_sel) or f_i.startswith(anio_sel) or f_f.startswith(anio_sel)
@@ -2152,7 +2401,7 @@ class PresupuestosFletApp:
                     bgcolor="#eaf3fc", border_radius=5, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
                     content=ft.Text(f"{c}: {format_money(p.get('montosPorCategoria', {}).get(c, 0.0))}", size=9.5, color="#2c5282", weight=ft.FontWeight.W_600)
                 )
-                for c in CATEGORIAS_GASTOS
+                for c in self.categorias_gastos
                 if float(p.get("montosPorCategoria", {}).get(c) or 0.0) > 0
             ]
 
