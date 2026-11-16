@@ -30,7 +30,7 @@ jobs:
 
       - name: Build APK
         run: |
-          flet build apk --yes --verbose
+          flet build apk --yes --verbose --android-permissions android.permission.READ_EXTERNAL_STORAGE=True android.permission.WRITE_EXTERNAL_STORAGE=True android.permission.MANAGE_EXTERNAL_STORAGE=True
           find . -name "*.apk"
 
       - name: Upload APK

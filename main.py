@@ -58,11 +58,19 @@ def normalizar_fecha_iso(raw: str) -> str:
     limpia = str(raw).strip().split(" ")[0]
     m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$", limpia)
     if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        yyyy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if mm > 12 and dd <= 12:
+            mm, dd = dd, mm
+        return f"{yyyy:04d}-{mm:02d}-{dd:02d}"
     m = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$", limpia)
     if m:
-        yyyy = "20" + m.group(3) if len(m.group(3)) == 2 else m.group(3)
-        return f"{yyyy}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+        p1, p2 = int(m.group(1)), int(m.group(2))
+        yyyy = int("20" + m.group(3) if len(m.group(3)) == 2 else m.group(3))
+        if p2 > 12 and p1 <= 12:
+            mm, dd = p1, p2
+        else:
+            dd, mm = p1, p2
+        return f"{yyyy:04d}-{mm:02d}-{dd:02d}"
     return limpia
 
 
@@ -164,27 +172,33 @@ def leer_archivo_seguro(ruta: str):
                 return f.read()
         except UnicodeDecodeError:
             continue
+        except OSError:
+            return None
     return None
 
 
 def obtener_rutas_rapidas() -> list:
     rutas = [("📁 Datos_CSV", CSV_DIR)]
-    home = os.path.expanduser("~")
-    candidatos = [
-        ("⬇️ Descargas", os.path.join(home, "Downloads")),
-        ("⬇️ Descargas", "/storage/emulated/0/Download"),
-        ("📄 Documentos", os.path.join(home, "Documents")),
-        ("📄 Documentos", "/storage/emulated/0/Documents"),
-        ("📱 Android", "/storage/emulated/0"),
-        ("🏠 Inicio", home),
-    ]
-    vistos = {os.path.abspath(CSV_DIR)}
-    for etiqueta, r in candidatos:
-        if os.path.isdir(r):
-            abs_r = os.path.abspath(r)
-            if abs_r not in vistos:
-                vistos.add(abs_r)
-                rutas.append((etiqueta, abs_r))
+    es_android = os.path.exists("/storage/emulated/0") or ("FLET_APP_STORAGE_DATA" in os.environ)
+    if es_android:
+        rutas.extend([
+            ("⬇️ Descargas", "/storage/emulated/0/Download"),
+            ("📄 Documentos", "/storage/emulated/0/Documents"),
+            ("📱 Memoria Interna", "/storage/emulated/0"),
+        ])
+    else:
+        home = os.path.expanduser("~")
+        vistos = {os.path.abspath(CSV_DIR)}
+        for etiqueta, sub in [("⬇️ Descargas", "Downloads"), ("📄 Documentos", "Documents")]:
+            r = os.path.join(home, sub)
+            if os.path.isdir(r):
+                abs_r = os.path.abspath(r)
+                if abs_r not in vistos:
+                    vistos.add(abs_r)
+                    rutas.append((etiqueta, abs_r))
+        abs_home = os.path.abspath(home)
+        if abs_home not in vistos:
+            rutas.append(("🏠 Inicio", abs_home))
     return rutas
 
 
@@ -366,11 +380,12 @@ class PresupuestosFletApp:
                 t.get("categoria") or "",
                 t.get("concepto") or "",
                 limpiar_importe(t.get("importe")),
-                t.get("presupuesto") or ""
+                t.get("presupuesto") or "",
+                int(t.get("id") or 0)
             ]
             for t in ordenados
         ]
-        return serializar_csv(["Fecha", "Categoría", "Concepto", "Importe", "Presupuesto"], filas)
+        return serializar_csv(["Fecha", "Categoría", "Concepto", "Importe", "Presupuesto", "ID"], filas)
 
     def _generar_csv_ingresos(self) -> str:
         ordenados = sorted(
@@ -384,11 +399,12 @@ class PresupuestosFletApp:
                 i.get("categoria") or "",
                 i.get("concepto") or "",
                 limpiar_importe(i.get("importe")),
-                i.get("presupuesto") or ""
+                i.get("presupuesto") or "",
+                int(i.get("id") or 0)
             ]
             for i in ordenados
         ]
-        return serializar_csv(["Fecha", "Categoría", "Concepto", "Importe", "Presupuesto"], filas)
+        return serializar_csv(["Fecha", "Categoría", "Concepto", "Importe", "Presupuesto", "ID"], filas)
 
     def _generar_csv_presupuestos(self) -> str:
         self._ordenar_presupuestos_db()
@@ -404,7 +420,7 @@ class PresupuestosFletApp:
             ])
         return serializar_csv(cabecera, filas)
 
-    def persist(self, guardar_csv: bool = True, guardar_resumen: bool = True):
+    def persist(self, guardar_csv: bool = True, guardar_resumen: bool = True, render: bool = True):
         self._ordenar_presupuestos_db()
         self.app_data["resumenPantalla"]["categoriasGastos"] = list(self.categorias_gastos)
         self.app_data["resumenPantalla"]["categoriasIngresos"] = list(self.categorias_ingresos)
@@ -435,7 +451,33 @@ class PresupuestosFletApp:
             self.sync_status_text = f"📁 Sincronizado ({hora})"
             self.sync_status_ok = True
 
-        self.render_ui()
+        if render:
+            self.render_ui()
+
+    def _cargar_coleccion_movimientos(self, filas: list, lista_categorias: list, fallback_cat: str) -> list:
+        total_l = len(filas)
+        resultado = []
+        ids_usados = set()
+        for idx, cols in enumerate(filas):
+            f = normalizar_fecha_iso(cols[0] if len(cols) > 0 else "")
+            pres_col = cols[4] if len(cols) >= 5 else ""
+            raw_id = str(cols[5]).strip() if len(cols) >= 6 else ""
+            if raw_id.isdigit() and int(raw_id) > 0 and int(raw_id) not in ids_usados:
+                item_id = int(raw_id)
+            else:
+                item_id = total_l - idx
+                while item_id in ids_usados or item_id <= 0:
+                    item_id += 1
+            ids_usados.add(item_id)
+            resultado.append({
+                "id": item_id,
+                "fecha": f,
+                "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", lista_categorias, fallback_cat),
+                "concepto": (cols[2] if len(cols) > 2 else "").strip(),
+                "importe": limpiar_importe(cols[3] if len(cols) > 3 else 0),
+                "presupuesto": self.inferir_presupuesto_por_fecha(f, pres_col)
+            })
+        return resultado
 
     def cargar_desde_disco(self, forzar_actual_o_cercano: bool = True):
         self.categorias_gastos = list(CATEGORIAS_GASTOS_DEFAULT)
@@ -510,40 +552,14 @@ class PresupuestosFletApp:
         gas_raw = leer_archivo_seguro(os.path.join(CSV_DIR, "gastos.csv"))
         if gas_raw:
             filas = leer_filas_csv(gas_raw)[1:]
-            total_l = len(filas)
-            trans = []
             fallback_g = resolver_categoria("Otros Fuera Presupuesto", self.categorias_gastos, self.categorias_gastos[-1])
-            for idx, cols in enumerate(filas):
-                f = normalizar_fecha_iso(cols[0] if len(cols) > 0 else "")
-                pres_col = cols[4] if len(cols) >= 5 else ""
-                trans.append({
-                    "id": total_l - idx,
-                    "fecha": f,
-                    "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", self.categorias_gastos, fallback_g),
-                    "concepto": (cols[2] if len(cols) > 2 else "").strip(),
-                    "importe": limpiar_importe(cols[3] if len(cols) > 3 else 0),
-                    "presupuesto": self.inferir_presupuesto_por_fecha(f, pres_col)
-                })
-            self.app_data["transacciones"] = trans
+            self.app_data["transacciones"] = self._cargar_coleccion_movimientos(filas, self.categorias_gastos, fallback_g)
 
         ing_raw = leer_archivo_seguro(os.path.join(CSV_DIR, "ingresos.csv"))
         if ing_raw:
             filas = leer_filas_csv(ing_raw)[1:]
-            total_l = len(filas)
-            ingresos = []
             fallback_i = resolver_categoria("Efectivo", self.categorias_ingresos, self.categorias_ingresos[0])
-            for idx, cols in enumerate(filas):
-                f = normalizar_fecha_iso(cols[0] if len(cols) > 0 else "")
-                pres_col = cols[4] if len(cols) >= 5 else ""
-                ingresos.append({
-                    "id": total_l - idx,
-                    "fecha": f,
-                    "categoria": resolver_categoria(cols[1] if len(cols) > 1 else "", self.categorias_ingresos, fallback_i),
-                    "concepto": (cols[2] if len(cols) > 2 else "").strip(),
-                    "importe": limpiar_importe(cols[3] if len(cols) > 3 else 0),
-                    "presupuesto": self.inferir_presupuesto_por_fecha(f, pres_col)
-                })
-            self.app_data["ingresos"] = ingresos
+            self.app_data["ingresos"] = self._cargar_coleccion_movimientos(filas, self.categorias_ingresos, fallback_i)
 
         self.app_data["resumenPantalla"].setdefault("ocultarSinUsarGastos", True)
         self.app_data["resumenPantalla"].setdefault("ocultarSinUsarIngresos", True)
@@ -553,7 +569,6 @@ class PresupuestosFletApp:
     # COMPONENTES DE DIÁLOGOS MODERNOS Y SELECTORES
     # -----------------------------------------------------------------
     def _abrir_dialogo(self, dlg: ft.AlertDialog):
-        # Limpiar únicamente diálogos que ya fueron cerrados en turnos previos
         for d in list(self.page.overlay):
             if isinstance(d, ft.AlertDialog) and not getattr(d, "open", False) and d is not dlg:
                 self.page.overlay.remove(d)
@@ -779,7 +794,12 @@ class PresupuestosFletApp:
             try:
                 os.listdir(ruta_limpia)
             except PermissionError:
-                self.mostrar_alerta("Permiso denegado", f"El sistema bloqueó el acceso a:\n{ruta_limpia}", "🔒")
+                self.mostrar_alerta(
+                    "Permiso requerido en Android",
+                    f"Android bloqueó el acceso a:\n{ruta_limpia}\n\n"
+                    "Activa el permiso en:\nAjustes → Aplicaciones → Acceso especial → Acceso a todos los archivos → Presupuestos.",
+                    "🔒"
+                )
                 return
             except Exception as ex:
                 self.mostrar_alerta("Error de acceso", str(ex), "⚠️")
@@ -1995,7 +2015,6 @@ class PresupuestosFletApp:
                 content_padding=ft.Padding.symmetric(horizontal=4, vertical=2),
                 border_color=inp_border, bgcolor="#ffffff",
                 keyboard_type=ft.KeyboardType.NUMBER,
-                on_submit=lambda e, c=cat: _on_previsto_change(c, e.control.value),
                 on_blur=lambda e, c=cat: _on_previsto_change(c, e.control.value)
             )
 
@@ -2127,7 +2146,7 @@ class PresupuestosFletApp:
         )
 
     # -----------------------------------------------------------------
-    # VISTAS 2 Y 3: GASTOS E INGRESOS
+    # VISTAS 2 Y 3: GASTOS E INGRESOS (CON FILTRADO EN TIEMPO REAL)
     # -----------------------------------------------------------------
     def _build_movimientos_view(self, tipo: str) -> ft.Control:
         es_gasto = (tipo == "gasto")
@@ -2140,55 +2159,116 @@ class PresupuestosFletApp:
         k_cat = "trans_cat" if es_gasto else "ing_cat"
         k_per = "trans_per" if es_gasto else "ing_per"
 
-        txt_filtro = limpiar_clave(self.filtros[k_txt])
-        cat_filtro = self.filtros[k_cat]
-        modo_per = self.filtros[k_per]
-
-        nombre_activo = self.obtener_nombre_presupuesto_activo()
-        f_ini = normalizar_fecha_iso(self.app_data["resumenPantalla"]["fechaInicio"])
-        f_fin = normalizar_fecha_iso(self.app_data["resumenPantalla"]["fechaFin"])
-
-        filtrados = []
-        for m in coleccion:
-            f = normalizar_fecha_iso(m.get("fecha"))
-            f_bonita = formatear_fecha_bonita(f)
-            pres_txt = m.get("presupuesto") or "Sin presupuesto"
-            imp_str = format_money(m.get("importe"))
-            busq = limpiar_clave(f"{m.get('concepto', '')} {m.get('categoria', '')} {pres_txt} {f} {f_bonita} {imp_str}")
-            coincide_txt = (not txt_filtro) or all(tok in busq for tok in txt_filtro.split())
-            coincide_cat = (not cat_filtro) or (m.get("categoria") == cat_filtro)
-
-            if modo_per == "activo":
-                coincide_per = self.pertenece_a_presupuesto_activo(m, nombre_activo, f_ini, f_fin)
-            elif modo_per != "todos":
-                coincide_per = limpiar_clave(m.get("presupuesto")) == limpiar_clave(modo_per)
-            else:
-                coincide_per = True
-
-            if coincide_txt and coincide_cat and coincide_per:
-                filtrados.append(m)
-
-        st = self.sort_state[tabla_key]
-        rev = (st["dir"] == "desc")
-        col = st["col"]
-        filtrados.sort(
-            key=lambda x: (
-                normalizar_fecha_iso(x.get("fecha")) if col == "fecha" else
-                limpiar_clave(x.get(col, "")) if col in ("presupuesto", "categoria", "concepto") else
-                limpiar_importe(x.get("importe")),
-                int(x.get("id") or 0)
-            ),
-            reverse=rev
-        )
-
-        total_filtrado = sum(limpiar_importe(x["importe"]) for x in filtrados)
         pag = self.pag_state[tabla_key]
-        total_items = len(filtrados)
-        total_pages = max(1, math.ceil(total_items / pag["size"])) if total_items > 0 else 1
-        pag["page"] = max(1, min(total_pages, pag["page"]))
-        start_idx = (pag["page"] - 1) * pag["size"]
-        end_idx = min(total_items, start_idx + pag["size"])
-        pagina_items = filtrados[start_idx:end_idx]
+        st = self.sort_state[tabla_key]
+
+        lbl_titulo_head = ft.Text("", color="white", weight=ft.FontWeight.BOLD, size=11, expand=True)
+        col_filas_ui = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0)
+        contenedor_pag = ft.Container()
+
+        def _borrar_mov(mov_id: int):
+            self.mostrar_confirmacion(
+                "Eliminar Registro",
+                "¿Confirmas que deseas eliminar este movimiento?",
+                lambda: (self.app_data.update({tabla_key: [x for x in coleccion if int(x["id"]) != int(mov_id)]}), self.persist())
+            )
+
+        def _refrescar_listado_local(actualizar_pagina: bool = True):
+            txt_filtro = limpiar_clave(self.filtros[k_txt])
+            cat_filtro = self.filtros[k_cat]
+            modo_per = self.filtros[k_per]
+
+            nombre_activo = self.obtener_nombre_presupuesto_activo()
+            f_ini = normalizar_fecha_iso(self.app_data["resumenPantalla"]["fechaInicio"])
+            f_fin = normalizar_fecha_iso(self.app_data["resumenPantalla"]["fechaFin"])
+
+            filtrados = []
+            for m in coleccion:
+                f = normalizar_fecha_iso(m.get("fecha"))
+                f_bonita = formatear_fecha_bonita(f)
+                pres_txt = m.get("presupuesto") or "Sin presupuesto"
+                imp_str = format_money(m.get("importe"))
+                busq = limpiar_clave(f"{m.get('concepto', '')} {m.get('categoria', '')} {pres_txt} {f} {f_bonita} {imp_str}")
+                coincide_txt = (not txt_filtro) or all(tok in busq for tok in txt_filtro.split())
+                coincide_cat = (not cat_filtro) or (m.get("categoria") == cat_filtro)
+
+                if modo_per == "activo":
+                    coincide_per = self.pertenece_a_presupuesto_activo(m, nombre_activo, f_ini, f_fin)
+                elif modo_per != "todos":
+                    coincide_per = limpiar_clave(m.get("presupuesto")) == limpiar_clave(modo_per)
+                else:
+                    coincide_per = True
+
+                if coincide_txt and coincide_cat and coincide_per:
+                    filtrados.append(m)
+
+            rev = (st["dir"] == "desc")
+            col = st["col"]
+            filtrados.sort(
+                key=lambda x: (
+                    normalizar_fecha_iso(x.get("fecha")) if col == "fecha" else
+                    limpiar_clave(x.get(col, "")) if col in ("presupuesto", "categoria", "concepto") else
+                    limpiar_importe(x.get("importe")),
+                    int(x.get("id") or 0)
+                ),
+                reverse=rev
+            )
+
+            total_filtrado = sum(limpiar_importe(x["importe"]) for x in filtrados)
+            total_items = len(filtrados)
+            total_pages = max(1, math.ceil(total_items / pag["size"])) if total_items > 0 else 1
+            pag["page"] = max(1, min(total_pages, pag["page"]))
+            start_idx = (pag["page"] - 1) * pag["size"]
+            end_idx = min(total_items, start_idx + pag["size"])
+            pagina_items = filtrados[start_idx:end_idx]
+
+            lbl_titulo_head.value = (
+                f"💳 Gastos ({len(filtrados)} | {format_money(total_filtrado)})"
+                if es_gasto else
+                f"💵 Ingresos ({len(filtrados)} | {format_money(total_filtrado)})"
+            )
+
+            col_filas_ui.controls.clear()
+            for r_idx, m in enumerate(pagina_items):
+                pres_str = f"📊 {m['presupuesto']}" if m.get("presupuesto") else "Por fecha"
+                col_filas_ui.controls.append(
+                    ft.Container(
+                        bgcolor="#ffffff" if r_idx % 2 == 0 else "#f6f9fc",
+                        border=ft.Border.only(left=ft.BorderSide(3.5, color_imp), bottom=ft.BorderSide(1, "#e2ecf5")),
+                        padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Container(
+                                    bgcolor="#ffe4e6" if es_gasto else "#d1fae5",
+                                    border_radius=5, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                                    content=ft.Text(m.get("categoria", ""), color=color_imp, weight=ft.FontWeight.BOLD, size=10.5)
+                                ),
+                                ft.Text(m.get("concepto", ""), color="#1e293b", weight=ft.FontWeight.W_600, size=11.5, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text(format_money(m.get("importe")), color=color_imp, weight=ft.FontWeight.BOLD, size=12)
+                            ], spacing=6),
+                            ft.Row([
+                                ft.Text(f"📅 {formatear_fecha_bonita(m.get('fecha'))}  •  {pres_str}", color="#64748b", size=10, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Container(
+                                    bgcolor="#eaf3fc", padding=ft.Padding.symmetric(horizontal=7, vertical=2), border_radius=4,
+                                    on_click=lambda e, mid=m["id"]: self.open_movimiento_modal(tipo, mid),
+                                    content=ft.Text("✏️ Editar", size=10, color="#2c5282", weight=ft.FontWeight.BOLD)
+                                ),
+                                ft.Container(
+                                    bgcolor="#fee2e2", padding=ft.Padding.symmetric(horizontal=7, vertical=2), border_radius=4,
+                                    on_click=lambda e, mid=m["id"]: _borrar_mov(mid),
+                                    content=ft.Text("×", size=12, color="#dc2626", weight=ft.FontWeight.BOLD)
+                                )
+                            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                        ], spacing=4)
+                    )
+                )
+
+            contenedor_pag.content = self._build_pagination_bar(
+                tabla_key, total_items, start_idx, end_idx, total_pages,
+                on_page_change=lambda: _refrescar_listado_local(True)
+            )
+            if actualizar_pagina:
+                self.page.update()
 
         def _toggle_sort(c_name):
             if st["col"] == c_name:
@@ -2214,6 +2294,8 @@ class PresupuestosFletApp:
             ("📌 Solo presupuesto activo", "activo", "activo resumen")
         ] + [(f"📊 {p['nombre']}", p["nombre"], p["nombre"]) for p in self.app_data["presupuestosDB"]]
 
+        modo_per = self.filtros[k_per]
+        cat_filtro = self.filtros[k_cat]
         etiqueta_per_actual = "📅 Todos" if modo_per == "todos" else ("📌 Activo" if modo_per == "activo" else f"📊 {modo_per}")
 
         fbar = ft.Container(
@@ -2224,7 +2306,7 @@ class PresupuestosFletApp:
                         hint_text="🔍 Buscar concepto, fecha o monto...",
                         value=self.filtros[k_txt], expand=True, height=34, text_size=11.5,
                         content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-                        on_submit=lambda e: (self.filtros.update({k_txt: e.control.value}), pag.update({"page": 1}), self.render_ui())
+                        on_change=lambda e: (self.filtros.update({k_txt: e.control.value}), pag.update({"page": 1}), _refrescar_listado_local(True))
                     ),
                     ft.Button(
                         "Limpiar", bgcolor="#eaf3fc", color="#2c5282",
@@ -2258,53 +2340,7 @@ class PresupuestosFletApp:
             ], spacing=6)
         )
 
-        def _borrar_mov(mov_id: int):
-            self.mostrar_confirmacion(
-                "Eliminar Registro",
-                "¿Confirmas que deseas eliminar este movimiento?",
-                lambda: (self.app_data.update({tabla_key: [x for x in coleccion if int(x["id"]) != int(mov_id)]}), self.persist())
-            )
-
-        filas_movimientos = []
-        for r_idx, m in enumerate(pagina_items):
-            pres_str = f"📊 {m['presupuesto']}" if m.get("presupuesto") else "Por fecha"
-            filas_movimientos.append(
-                ft.Container(
-                    bgcolor="#ffffff" if r_idx % 2 == 0 else "#f6f9fc",
-                    border=ft.Border.only(left=ft.BorderSide(3.5, color_imp), bottom=ft.BorderSide(1, "#e2ecf5")),
-                    padding=ft.Padding.symmetric(horizontal=8, vertical=6),
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Container(
-                                bgcolor="#ffe4e6" if es_gasto else "#d1fae5",
-                                border_radius=5, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                                content=ft.Text(m.get("categoria", ""), color=color_imp, weight=ft.FontWeight.BOLD, size=10.5)
-                            ),
-                            ft.Text(m.get("concepto", ""), color="#1e293b", weight=ft.FontWeight.W_600, size=11.5, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Text(format_money(m.get("importe")), color=color_imp, weight=ft.FontWeight.BOLD, size=12)
-                        ], spacing=6),
-                        ft.Row([
-                            ft.Text(f"📅 {formatear_fecha_bonita(m.get('fecha'))}  •  {pres_str}", color="#64748b", size=10, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Container(
-                                bgcolor="#eaf3fc", padding=ft.Padding.symmetric(horizontal=7, vertical=2), border_radius=4,
-                                on_click=lambda e, mid=m["id"]: self.open_movimiento_modal(tipo, mid),
-                                content=ft.Text("✏️ Editar", size=10, color="#2c5282", weight=ft.FontWeight.BOLD)
-                            ),
-                            ft.Container(
-                                bgcolor="#fee2e2", padding=ft.Padding.symmetric(horizontal=7, vertical=2), border_radius=4,
-                                on_click=lambda e, mid=m["id"]: _borrar_mov(mid),
-                                content=ft.Text("×", size=12, color="#dc2626", weight=ft.FontWeight.BOLD)
-                            )
-                        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-                    ], spacing=4)
-                )
-            )
-
-        titulo_head = (
-            f"💳 Gastos ({len(filtrados)} | {format_money(total_filtrado)})"
-            if es_gasto else
-            f"💵 Ingresos ({len(filtrados)} | {format_money(total_filtrado)})"
-        )
+        _refrescar_listado_local(False)
 
         return ft.Container(
             expand=True, bgcolor="#ffffff", border=ft.Border.all(1, "#c2d5e8"), border_radius=8, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -2312,7 +2348,7 @@ class PresupuestosFletApp:
                 ft.Container(
                     bgcolor="#4a78a8", padding=ft.Padding.symmetric(horizontal=10, vertical=6),
                     content=ft.Row([
-                        ft.Text(titulo_head, color="white", weight=ft.FontWeight.BOLD, size=11, expand=True),
+                        lbl_titulo_head,
                         ft.Container(
                             bgcolor="#e11d48" if es_gasto else "#10b981", border_radius=6,
                             padding=ft.Padding.symmetric(horizontal=10, vertical=4),
@@ -2322,50 +2358,110 @@ class PresupuestosFletApp:
                     ])
                 ),
                 fbar,
-                ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0, controls=filas_movimientos),
-                self._build_pagination_bar(tabla_key, total_items, start_idx, end_idx, total_pages)
+                col_filas_ui,
+                contenedor_pag
             ])
         )
 
     # -----------------------------------------------------------------
-    # VISTA 4: PERÍODOS DE PRESUPUESTOS GUARDADOS
+    # VISTA 4: PERÍODOS DE PRESUPUESTOS GUARDADOS (FILTRADO EN VIVO)
     # -----------------------------------------------------------------
     def _build_presupuestos_view(self) -> ft.Control:
         db = self.app_data["presupuestosDB"]
-        txt = limpiar_clave(self.filtros["pres_txt"])
         anio_sel = self.filtros["pres_anio"]
-
-        registros = []
-        for idx, p in enumerate(db):
-            f_i = normalizar_fecha_iso(p.get("fechaInicio"))
-            f_f = normalizar_fecha_iso(p.get("fechaFin"))
-            total_fila = sum(float(p.get("montosPorCategoria", {}).get(c) or 0.0) for c in self.categorias_gastos)
-            busq = limpiar_clave(f"{p['nombre']} {f_i} {f_f} {formatear_fecha_bonita(f_i)} {formatear_fecha_bonita(f_f)} {format_money(total_fila)}")
-            coincide_txt = (not txt) or all(tok in busq for tok in txt.split())
-            coincide_anio = (not anio_sel) or f_i.startswith(anio_sel) or f_f.startswith(anio_sel)
-            if coincide_txt and coincide_anio:
-                registros.append((idx, p, total_fila))
-
-        st = self.sort_state["presupuestos"]
-        rev = (st["dir"] == "desc")
-        col = st["col"]
-        registros.sort(
-            key=lambda item: (
-                limpiar_clave(item[1].get("nombre")) if col == "nombre" else
-                normalizar_fecha_iso(item[1].get("fechaInicio")) if col == "fechaInicio" else
-                item[2]
-            ),
-            reverse=rev
-        )
-
-        suma_totales = sum(r[2] for r in registros)
         pag = self.pag_state["presupuestos"]
-        total_items = len(registros)
-        total_pages = max(1, math.ceil(total_items / pag["size"])) if total_items > 0 else 1
-        pag["page"] = max(1, min(total_pages, pag["page"]))
-        start_idx = (pag["page"] - 1) * pag["size"]
-        end_idx = min(total_items, start_idx + pag["size"])
-        pagina_items = registros[start_idx:end_idx]
+        st = self.sort_state["presupuestos"]
+
+        lbl_titulo_head = ft.Text("", color="white", weight=ft.FontWeight.BOLD, size=11, expand=True)
+        col_tarjetas_ui = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0)
+        contenedor_pag = ft.Container()
+
+        def _refrescar_presupuestos_local(actualizar_pagina: bool = True):
+            txt = limpiar_clave(self.filtros["pres_txt"])
+            anio_f = self.filtros["pres_anio"]
+
+            registros = []
+            for idx, p in enumerate(db):
+                f_i = normalizar_fecha_iso(p.get("fechaInicio"))
+                f_f = normalizar_fecha_iso(p.get("fechaFin"))
+                total_fila = sum(float(p.get("montosPorCategoria", {}).get(c) or 0.0) for c in self.categorias_gastos)
+                busq = limpiar_clave(f"{p['nombre']} {f_i} {f_f} {formatear_fecha_bonita(f_i)} {formatear_fecha_bonita(f_f)} {format_money(total_fila)}")
+                coincide_txt = (not txt) or all(tok in busq for tok in txt.split())
+                coincide_anio = (not anio_f) or f_i.startswith(anio_f) or f_f.startswith(anio_f)
+                if coincide_txt and coincide_anio:
+                    registros.append((idx, p, total_fila))
+
+            rev = (st["dir"] == "desc")
+            col = st["col"]
+            registros.sort(
+                key=lambda item: (
+                    limpiar_clave(item[1].get("nombre")) if col == "nombre" else
+                    normalizar_fecha_iso(item[1].get("fechaInicio")) if col == "fechaInicio" else
+                    item[2]
+                ),
+                reverse=rev
+            )
+
+            suma_totales = sum(r[2] for r in registros)
+            total_items = len(registros)
+            total_pages = max(1, math.ceil(total_items / pag["size"])) if total_items > 0 else 1
+            pag["page"] = max(1, min(total_pages, pag["page"]))
+            start_idx = (pag["page"] - 1) * pag["size"]
+            end_idx = min(total_items, start_idx + pag["size"])
+            pagina_items = registros[start_idx:end_idx]
+
+            lbl_titulo_head.value = f"📅 Períodos ({len(registros)} | {format_money(suma_totales)})"
+
+            col_tarjetas_ui.controls.clear()
+            for r_idx, (orig_idx, p, total_fila) in enumerate(pagina_items):
+                chips_cats = [
+                    ft.Container(
+                        bgcolor="#eaf3fc", border_radius=5, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                        content=ft.Text(f"{c}: {format_money(p.get('montosPorCategoria', {}).get(c, 0.0))}", size=9.5, color="#2c5282", weight=ft.FontWeight.W_600)
+                    )
+                    for c in self.categorias_gastos
+                    if float(p.get("montosPorCategoria", {}).get(c) or 0.0) > 0
+                ]
+
+                col_tarjetas_ui.controls.append(
+                    ft.Container(
+                        bgcolor="#ffffff" if r_idx % 2 == 0 else "#f6f9fc",
+                        border=ft.Border.only(left=ft.BorderSide(3.5, "#4a78a8"), bottom=ft.BorderSide(1, "#c2d5e8")),
+                        padding=8,
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Text(f"📊 {p['nombre']}", color="#1e293b", weight=ft.FontWeight.BOLD, size=12, expand=True),
+                                ft.Text(format_money(total_fila), color="#2c5282", weight=ft.FontWeight.BOLD, size=12.5),
+                            ]),
+                            ft.Row([
+                                ft.Text(f"📅 {formatear_fecha_bonita(p['fechaInicio'])} al {formatear_fecha_bonita(p['fechaFin'])}", color="#475569", size=10, expand=True),
+                                ft.Container(
+                                    bgcolor="#d1fae5", padding=ft.Padding.symmetric(horizontal=7, vertical=3), border_radius=5,
+                                    on_click=lambda e, oi=orig_idx: self.cargar_presupuesto_por_indice(oi),
+                                    content=ft.Text("📂 Cargar", size=10, color="#065f46", weight=ft.FontWeight.BOLD)
+                                ),
+                                ft.Container(
+                                    bgcolor="#eaf3fc", padding=ft.Padding.symmetric(horizontal=7, vertical=3), border_radius=5,
+                                    on_click=lambda e, oi=orig_idx: self.abrir_modal_presupuesto(oi),
+                                    content=ft.Text("✏️ Editar", size=10, color="#2c5282", weight=ft.FontWeight.BOLD)
+                                ),
+                                ft.Container(
+                                    bgcolor="#fee2e2", padding=ft.Padding.symmetric(horizontal=7, vertical=3), border_radius=5,
+                                    on_click=lambda e, oi=orig_idx: self.confirmar_eliminar_presupuesto(oi),
+                                    content=ft.Text("×", size=12, color="#dc2626", weight=ft.FontWeight.BOLD)
+                                ),
+                            ], spacing=5),
+                            ft.Row(chips_cats, wrap=True, spacing=4, run_spacing=4) if chips_cats else ft.Container()
+                        ], spacing=5)
+                    )
+                )
+
+            contenedor_pag.content = self._build_pagination_bar(
+                "presupuestos", total_items, start_idx, end_idx, total_pages,
+                on_page_change=lambda: _refrescar_presupuestos_local(True)
+            )
+            if actualizar_pagina:
+                self.page.update()
 
         anios = sorted({
             normalizar_fecha_iso(p.get("fechaInicio"))[:4]
@@ -2379,7 +2475,7 @@ class PresupuestosFletApp:
                     hint_text="🔍 Filtrar período o fecha...",
                     value=self.filtros["pres_txt"], expand=True, height=34, text_size=11.5,
                     content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-                    on_submit=lambda e: (self.filtros.update({"pres_txt": e.control.value}), pag.update({"page": 1}), self.render_ui())
+                    on_change=lambda e: (self.filtros.update({"pres_txt": e.control.value}), pag.update({"page": 1}), _refrescar_presupuestos_local(True))
                 ),
                 ft.Container(
                     bgcolor="#ffffff", border=ft.Border.all(1, "#b8d4f0"), border_radius=6,
@@ -2394,49 +2490,7 @@ class PresupuestosFletApp:
             ], spacing=6)
         )
 
-        tarjetas_presupuestos = []
-        for r_idx, (orig_idx, p, total_fila) in enumerate(pagina_items):
-            chips_cats = [
-                ft.Container(
-                    bgcolor="#eaf3fc", border_radius=5, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                    content=ft.Text(f"{c}: {format_money(p.get('montosPorCategoria', {}).get(c, 0.0))}", size=9.5, color="#2c5282", weight=ft.FontWeight.W_600)
-                )
-                for c in self.categorias_gastos
-                if float(p.get("montosPorCategoria", {}).get(c) or 0.0) > 0
-            ]
-
-            tarjetas_presupuestos.append(
-                ft.Container(
-                    bgcolor="#ffffff" if r_idx % 2 == 0 else "#f6f9fc",
-                    border=ft.Border.only(left=ft.BorderSide(3.5, "#4a78a8"), bottom=ft.BorderSide(1, "#c2d5e8")),
-                    padding=8,
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Text(f"📊 {p['nombre']}", color="#1e293b", weight=ft.FontWeight.BOLD, size=12, expand=True),
-                            ft.Text(format_money(total_fila), color="#2c5282", weight=ft.FontWeight.BOLD, size=12.5),
-                        ]),
-                        ft.Row([
-                            ft.Text(f"📅 {formatear_fecha_bonita(p['fechaInicio'])} al {formatear_fecha_bonita(p['fechaFin'])}", color="#475569", size=10, expand=True),
-                            ft.Container(
-                                bgcolor="#d1fae5", padding=ft.Padding.symmetric(horizontal=7, vertical=3), border_radius=5,
-                                on_click=lambda e, oi=orig_idx: self.cargar_presupuesto_por_indice(oi),
-                                content=ft.Text("📂 Cargar", size=10, color="#065f46", weight=ft.FontWeight.BOLD)
-                            ),
-                            ft.Container(
-                                bgcolor="#eaf3fc", padding=ft.Padding.symmetric(horizontal=7, vertical=3), border_radius=5,
-                                on_click=lambda e, oi=orig_idx: self.abrir_modal_presupuesto(oi),
-                                content=ft.Text("✏️ Editar", size=10, color="#2c5282", weight=ft.FontWeight.BOLD)
-                            ),
-                            ft.Container(
-                                bgcolor="#fee2e2", padding=ft.Padding.symmetric(horizontal=7, vertical=3), border_radius=5,
-                                on_click=lambda e, oi=orig_idx: self.confirmar_eliminar_presupuesto(oi),
-                                content=ft.Text("×", size=12, color="#dc2626", weight=ft.FontWeight.BOLD)
-                            ),
-                        ], spacing=5),
-                        ft.Row(chips_cats, wrap=True, spacing=4, run_spacing=4) if chips_cats else ft.Container()
-                    ], spacing=5)
-                )
-            )
+        _refrescar_presupuestos_local(False)
 
         return ft.Container(
             expand=True, bgcolor="#ffffff", border=ft.Border.all(1, "#c2d5e8"), border_radius=8, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -2444,10 +2498,7 @@ class PresupuestosFletApp:
                 ft.Container(
                     bgcolor="#4a78a8", padding=ft.Padding.symmetric(horizontal=10, vertical=6),
                     content=ft.Row([
-                        ft.Text(
-                            f"📅 Períodos ({len(registros)} | {format_money(suma_totales)})",
-                            color="white", weight=ft.FontWeight.BOLD, size=11, expand=True
-                        ),
+                        lbl_titulo_head,
                         ft.Container(
                             bgcolor="#10b981", border_radius=6, padding=ft.Padding.symmetric(horizontal=10, vertical=4),
                             on_click=lambda e: self.abrir_modal_presupuesto(None),
@@ -2456,19 +2507,22 @@ class PresupuestosFletApp:
                     ])
                 ),
                 fbar,
-                ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=0, controls=tarjetas_presupuestos),
-                self._build_pagination_bar("presupuestos", total_items, start_idx, end_idx, total_pages)
+                col_tarjetas_ui,
+                contenedor_pag
             ])
         )
 
-    def _build_pagination_bar(self, key: str, total_items: int, start_idx: int, end_idx: int, total_pages: int) -> ft.Control:
+    def _build_pagination_bar(self, key: str, total_items: int, start_idx: int, end_idx: int, total_pages: int, on_page_change=None) -> ft.Control:
         pag = self.pag_state[key]
         cur = pag["page"]
         info_txt = "0 reg." if total_items == 0 else f"{start_idx + 1}–{end_idx} de {total_items}"
 
         def _go(p: int):
             pag["page"] = max(1, min(total_pages, p))
-            self.render_ui()
+            if on_page_change:
+                on_page_change()
+            else:
+                self.render_ui()
 
         return ft.Container(
             bgcolor="#f5f9fd", border=ft.Border.only(top=ft.BorderSide(1, "#c2d5e8")),

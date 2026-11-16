@@ -1,42 +1,42 @@
-﻿Fecha,Categoría,Concepto,Importe,Presupuesto
-2026-11-12,RWong,Mugrero Fresko,269.5,Q1 Noviembre 2026
-2026-11-12,Despensa,Fresco Huevo,85.0,Q1 Noviembre 2026
-2026-11-12,Otros Fuera Presupuesto,Consulta Celia,50.0,Q1 Noviembre 2026
-2026-11-12,Otros Fuera Presupuesto,Medicamentos Celia,854.0,Q1 Noviembre 2026
-2026-11-12,Despensa,Comida humeda en lata Chiriwillo,95.0,Q1 Noviembre 2026
-2026-11-12,Celia,Bodeguita,29.0,Q1 Noviembre 2026
-2026-11-12,Hipoteca,Hipoteca Banamex,10969.85,Q2 Noviembre 2026
-2026-11-12,Otros Fuera Presupuesto,Efectivo Elian,15.0,Q1 Noviembre 2026
-2026-11-11,Despensa,OXXO,84.0,Q1 Noviembre 2026
-2026-11-11,Otros Fuera Presupuesto,Efectivo Elian,350.0,Q1 Noviembre 2026
-2026-11-10,Otros Fuera Presupuesto,Efectivo,30.0,Q1 Noviembre 2026
-2026-11-10,Despensa,HEB,257.28,Q1 Noviembre 2026
-2026-11-09,Gastos Cassandra,10 Monedas de 10,100.0,Q1 Noviembre 2026
-2026-11-08,Despensa,HEB Semanal,2807.31,Q1 Noviembre 2026
-2026-11-08,Otros Fuera Presupuesto,HEB Sartenes,879.0,Q1 Noviembre 2026
-2026-11-08,RWong,HEB Mugrero,274.0,Q1 Noviembre 2026
-2026-11-08,Celia,Vestido en Vertiche,1100.0,Q1 Noviembre 2026
-2026-11-07,Telefonia Movil,Newww Celia,199.0,Q1 Noviembre 2026
-2026-11-07,RWong,Estacionamiento Galerias,35.0,Q1 Noviembre 2026
-2026-11-07,RWong,Estacionamiento Plaza Lincoln,25.0,Q1 Noviembre 2026
-2026-11-07,Despensa,Tostadas OXXO,59.0,Q1 Noviembre 2026
-2026-11-07,RWong,OXXO,65.5,Q1 Noviembre 2026
-2026-11-06,Otros Fuera Presupuesto,Material Elian,350.0,Q1 Noviembre 2026
-2026-11-06,Despensa,OXXO Tortillas Frijoles Refresco,158.0,Q1 Noviembre 2026
-2026-11-05,Otros Fuera Presupuesto,Gatorade Cassandra,81.5,Q1 Noviembre 2026
-2026-11-05,Despensa,HEB,351.0,Q1 Noviembre 2026
-2026-11-03,Telefonia Movil,Newww,199.0,Q1 Noviembre 2026
-2026-11-03,Despensa,HEB,105.0,Q1 Noviembre 2026
-2026-11-02,Despensa,HEB Semanal,2225.0,Q1 Noviembre 2026
-2026-11-02,Otros Fuera Presupuesto,Medicamentos Cassandrita,936.0,Q1 Noviembre 2026
-2026-11-02,Otros Fuera Presupuesto,Consulta Cassandrita,50.0,Q1 Noviembre 2026
-2026-11-02,Otros Fuera Presupuesto,Elian 120 Efectivo,120.0,Q1 Noviembre 2026
-2026-11-02,Gimnasia,Gimnasia Cassandrita,1300.0,Q1 Noviembre 2026
-2026-11-02,Mantenimiento,Mantenimiento Cumbre Altta,600.0,Q1 Noviembre 2026
-2026-11-01,Despensa,OXXO Tortillas Frijoles Refresco,127.5,Q1 Noviembre 2026
-2026-11-01,RWong,Refresco,44.5,Q1 Noviembre 2026
-2026-11-01,Otros Fuera Presupuesto,Pastel Elian,630.0,Q1 Noviembre 2026
-2026-11-01,Otros Fuera Presupuesto,Pizza Hot,540.0,Q1 Noviembre 2026
-2026-11-01,Otros Fuera Presupuesto,Regalo Elian,897.0,Q1 Noviembre 2026
-2026-11-01,Otros Fuera Presupuesto,Estacionamiento,25.0,Q1 Noviembre 2026
-2026-11-01,Agua,App AYD,786.0,Q1 Noviembre 2026
+﻿"Fecha","Categoría","Concepto","Importe","Presupuesto"
+"2026-11-12","RWong","Mugrero Fresko","269.5","Q1 Noviembre 2026"
+"2026-11-12","Despensa","Fresco Huevo","85.0","Q1 Noviembre 2026"
+"2026-11-12","Otros Fuera Presupuesto","Consulta Celia","50.0","Q1 Noviembre 2026"
+"2026-11-12","Otros Fuera Presupuesto","Medicamentos Celia","854.0","Q1 Noviembre 2026"
+"2026-11-12","Despensa","Comida humeda en lata Chiriwillo","95.0","Q1 Noviembre 2026"
+"2026-11-12","Celia","Bodeguita","29.0","Q1 Noviembre 2026"
+"2026-11-12","Hipoteca","Hipoteca Banamex","10969.85","Q2 Noviembre 2026"
+"2026-11-12","Otros Fuera Presupuesto","Efectivo Elian","15.0","Q1 Noviembre 2026"
+"2026-11-11","Despensa","OXXO","84.0","Q1 Noviembre 2026"
+"2026-11-11","Otros Fuera Presupuesto","Efectivo Elian","350.0","Q1 Noviembre 2026"
+"2026-11-10","Otros Fuera Presupuesto","Efectivo","30.0","Q1 Noviembre 2026"
+"2026-11-10","Despensa","HEB","257.28","Q1 Noviembre 2026"
+"2026-11-09","Gastos Cassandra","10 Monedas de 10","100.0","Q1 Noviembre 2026"
+"2026-11-08","Despensa","HEB Semanal","2807.31","Q1 Noviembre 2026"
+"2026-11-08","Otros Fuera Presupuesto","HEB Sartenes","879.0","Q1 Noviembre 2026"
+"2026-11-08","RWong","HEB Mugrero","274.0","Q1 Noviembre 2026"
+"2026-11-08","Celia","Vestido en Vertiche","1100.0","Q1 Noviembre 2026"
+"2026-11-07","Telefonia Movil","Newww Celia","199.0","Q1 Noviembre 2026"
+"2026-11-07","RWong","Estacionamiento Galerias","35.0","Q1 Noviembre 2026"
+"2026-11-07","RWong","Estacionamiento Plaza Lincoln","25.0","Q1 Noviembre 2026"
+"2026-11-07","Despensa","Tostadas OXXO","59.0","Q1 Noviembre 2026"
+"2026-11-07","RWong","OXXO","65.5","Q1 Noviembre 2026"
+"2026-11-06","Otros Fuera Presupuesto","Material Elian","350.0","Q1 Noviembre 2026"
+"2026-11-06","Despensa","OXXO Tortillas Frijoles Refresco","158.0","Q1 Noviembre 2026"
+"2026-11-05","Otros Fuera Presupuesto","Gatorade Cassandra","81.5","Q1 Noviembre 2026"
+"2026-11-05","Despensa","HEB","351.0","Q1 Noviembre 2026"
+"2026-11-03","Telefonia Movil","Newww","199.0","Q1 Noviembre 2026"
+"2026-11-03","Despensa","HEB","105.0","Q1 Noviembre 2026"
+"2026-11-02","Despensa","HEB Semanal","2225.0","Q1 Noviembre 2026"
+"2026-11-02","Otros Fuera Presupuesto","Medicamentos Cassandrita","936.0","Q1 Noviembre 2026"
+"2026-11-02","Otros Fuera Presupuesto","Consulta Cassandrita","50.0","Q1 Noviembre 2026"
+"2026-11-02","Otros Fuera Presupuesto","Elian 120 Efectivo","120.0","Q1 Noviembre 2026"
+"2026-11-02","Gimnasia","Gimnasia Cassandrita","1300.0","Q1 Noviembre 2026"
+"2026-11-02","Mantenimiento","Mantenimiento Cumbre Altta","600.0","Q1 Noviembre 2026"
+"2026-11-01","Despensa","OXXO Tortillas Frijoles Refresco","127.5","Q1 Noviembre 2026"
+"2026-11-01","RWong","Refresco","44.5","Q1 Noviembre 2026"
+"2026-11-01","Otros Fuera Presupuesto","Pastel Elian","630.0","Q1 Noviembre 2026"
+"2026-11-01","Otros Fuera Presupuesto","Pizza Hot","540.0","Q1 Noviembre 2026"
+"2026-11-01","Otros Fuera Presupuesto","Regalo Elian","897.0","Q1 Noviembre 2026"
+"2026-11-01","Otros Fuera Presupuesto","Estacionamiento","25.0","Q1 Noviembre 2026"
+"2026-11-01","Agua","App AYD","786.0","Q1 Noviembre 2026"
